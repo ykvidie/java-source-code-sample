@@ -2,7 +2,6 @@ package com.example.paul.controllers;
 
 import com.example.paul.constants.ACTION;
 import com.example.paul.controllers.workflow.OperationOutcome;
-import com.example.paul.controllers.workflow.OperationOutcomeType;
 import com.example.paul.controllers.workflow.OutcomeBuilder;
 import com.example.paul.models.Account;
 import com.example.paul.services.AccountService;

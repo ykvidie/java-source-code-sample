@@ -24,4 +24,9 @@ public class constants {
             "Account information is invalid or transaction has been denied for your protection. Please try again.";
     public static final String CREATE_ACCOUNT_FAILED =
             "Error happened during creating new account";
+
+    public static final String BANK_NAME_TOO_SHORT =
+            "Bank name must contain at least 3 characters";
+    public static final String OWNER_NAME_TOO_SHORT =
+            "Owner name must contain at least 3 characters";
 }

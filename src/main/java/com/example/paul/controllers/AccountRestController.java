@@ -2,7 +2,6 @@ package com.example.paul.controllers;
 
 import com.example.paul.constants.constants;
 import com.example.paul.controllers.workflow.OperationOutcome;
-import com.example.paul.controllers.workflow.OperationOutcomeType;
 import com.example.paul.controllers.workflow.OutcomeBuilder;
 import com.example.paul.models.Account;
 import com.example.paul.services.AccountService;
@@ -30,6 +29,7 @@ public class AccountRestController {
     private static final Logger LOGGER = LoggerFactory.getLogger(AccountRestController.class);
 
     private final AccountService accountService;
+    private static final int MIN_ACCOUNT_NAME_LENGTH = 3;
 
     @Autowired
     public AccountRestController(AccountService accountService) {
@@ -162,6 +162,16 @@ public class AccountRestController {
             return builder.buildInvalid(HttpStatus.BAD_REQUEST, constants.INVALID_SEARCH_CRITERIA);
         }
 
+        if (!hasMinimumLength(sanitizedBankName, MIN_ACCOUNT_NAME_LENGTH)) {
+            builder.record(DecisionPath.BANK_NAME_TOO_SHORT);
+            return builder.buildInvalid(HttpStatus.BAD_REQUEST, constants.BANK_NAME_TOO_SHORT);
+        }
+
+        if (!hasMinimumLength(sanitizedOwnerName, MIN_ACCOUNT_NAME_LENGTH)) {
+            builder.record(DecisionPath.OWNER_NAME_TOO_SHORT);
+            return builder.buildInvalid(HttpStatus.BAD_REQUEST, constants.OWNER_NAME_TOO_SHORT);
+        }
+
         builder.record(DecisionPath.CREATION_ATTEMPT);
         Account account = accountService.createAccount(sanitizedBankName, sanitizedOwnerName);
 
@@ -189,6 +199,10 @@ public class AccountRestController {
         return sanitized;
     }
 
+    private boolean hasMinimumLength(String value, int minLength) {
+        return value != null && value.length() >= minLength;
+    }
+
     private enum DecisionPath {
         PRE_VALIDATION,
         VALIDATION_FAILED_MISSING_FIELDS,
@@ -202,7 +216,9 @@ public class AccountRestController {
         RESULT_SUCCESS,
         CREATION_ATTEMPT,
         CREATION_FAILURE,
-        CREATION_SUCCESS
+        CREATION_SUCCESS,
+        BANK_NAME_TOO_SHORT,
+        OWNER_NAME_TOO_SHORT
     }
 
 }
