@@ -142,6 +142,12 @@ public class TransactionRestController {
             return builder.buildInvalid(HttpStatus.BAD_REQUEST, INVALID_TRANSACTION);
         }
 
+        builder.record(DecisionPath.AMOUNT_VALIDATION);
+        if (!isPositive(transactionInput.getAmount())) {
+            builder.record(DecisionPath.AMOUNT_INVALID);
+            return builder.buildInvalid(HttpStatus.BAD_REQUEST, INVALID_TRANSACTION_AMOUNT);
+        }
+
         builder.record(DecisionPath.TRANSFER_ATTEMPT);
         boolean completed = transactionService.makeTransfer(transactionInput);
 
@@ -161,6 +167,12 @@ public class TransactionRestController {
         if (!InputValidator.isSearchCriteriaValid(withdrawInput)) {
             builder.record(DecisionPath.VALIDATION_FAILED_GENERIC);
             return builder.buildInvalid(HttpStatus.BAD_REQUEST, INVALID_SEARCH_CRITERIA);
+        }
+
+        builder.record(DecisionPath.AMOUNT_VALIDATION);
+        if (!isPositive(withdrawInput.getAmount())) {
+            builder.record(DecisionPath.AMOUNT_INVALID);
+            return builder.buildInvalid(HttpStatus.BAD_REQUEST, INVALID_TRANSACTION_AMOUNT);
         }
 
         builder.record(DecisionPath.ACCOUNT_LOOKUP);
@@ -193,6 +205,12 @@ public class TransactionRestController {
             return builder.buildInvalid(HttpStatus.BAD_REQUEST, INVALID_SEARCH_CRITERIA);
         }
 
+        builder.record(DecisionPath.AMOUNT_VALIDATION);
+        if (!isPositive(depositInput.getAmount())) {
+            builder.record(DecisionPath.AMOUNT_INVALID);
+            return builder.buildInvalid(HttpStatus.BAD_REQUEST, INVALID_TRANSACTION_AMOUNT);
+        }
+
         builder.record(DecisionPath.ACCOUNT_LOOKUP);
         Account account = accountService.getAccount(depositInput.getTargetAccountNo());
 
@@ -208,9 +226,15 @@ public class TransactionRestController {
         return builder.buildSuccess(SUCCESS, HttpStatus.OK);
     }
 
+    private boolean isPositive(double amount) {
+        return amount > 0;
+    }
+
     private enum DecisionPath {
         PRE_VALIDATION,
         VALIDATION_FAILED_GENERIC,
+        AMOUNT_VALIDATION,
+        AMOUNT_INVALID,
         TRANSFER_ATTEMPT,
         TRANSFER_FAILED,
         ACCOUNT_LOOKUP,

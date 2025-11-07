@@ -29,4 +29,7 @@ public class constants {
             "Bank name must contain at least 3 characters";
     public static final String OWNER_NAME_TOO_SHORT =
             "Owner name must contain at least 3 characters";
+
+    public static final String INVALID_TRANSACTION_AMOUNT =
+            "Transaction amount must be greater than zero";
 }
