@@ -45,7 +45,7 @@ public class TransactionRestController {
             produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> makeTransfer(
             @Valid @RequestBody TransactionInput transactionInput) {
-        LOGGER.debug("Triggered TransactionRestController.makeTransfer");
+        LOGGER.debug("TransactionRestController.makeTransfer called");
 
         OperationOutcome<Boolean, DecisionPath> outcome = evaluateTransfer(transactionInput);
         logOutcome(outcome, "transaction transfer");
@@ -60,7 +60,7 @@ public class TransactionRestController {
             produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> withdraw(
             @Valid @RequestBody WithdrawInput withdrawInput) {
-        LOGGER.debug("Triggered TransactionRestController.withdraw");
+        LOGGER.debug("TransactionRestController.withdraw called");
 
         OperationOutcome<String, DecisionPath> outcome = evaluateWithdrawal(withdrawInput);
         logOutcome(outcome, "withdrawal");
@@ -76,7 +76,7 @@ public class TransactionRestController {
             produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> deposit(
             @Valid @RequestBody DepositInput depositInput) {
-        LOGGER.debug("Triggered TransactionRestController.deposit");
+        LOGGER.debug("TransactionRestController.deposit called");
 
         OperationOutcome<String, DecisionPath> outcome = evaluateDeposit(depositInput);
         logOutcome(outcome, "deposit");
@@ -139,19 +139,19 @@ public class TransactionRestController {
         OutcomeBuilder<Boolean, DecisionPath> builder = OutcomeBuilder.<Boolean, DecisionPath>begin()
                 .record(DecisionPath.PRE_VALIDATION);
 
+        if (!validateAndNormalizeAmount(transactionInput::setAmount, transactionInput.getAmount(), builder)) {
+            return builder.buildInvalid(HttpStatus.BAD_REQUEST, INVALID_TRANSACTION_AMOUNT);
+        }
+
         if (!InputValidator.isSearchTransactionValid(transactionInput)) {
             builder.record(DecisionPath.VALIDATION_FAILED_GENERIC);
             return builder.buildInvalid(HttpStatus.BAD_REQUEST, INVALID_TRANSACTION);
         }
 
-        if (!validateAndNormalizeAmount(transactionInput::setAmount, transactionInput.getAmount(), builder)) {
-            return builder.buildInvalid(HttpStatus.BAD_REQUEST, INVALID_TRANSACTION_AMOUNT);
-        }
-
         builder.record(DecisionPath.TRANSFER_ATTEMPT);
-        boolean completed = transactionService.makeTransfer(transactionInput);
+        boolean transferResult = transactionService.makeTransfer(transactionInput);
 
-        if (!completed) {
+        if (!transferResult) {
             builder.record(DecisionPath.TRANSFER_FAILED);
             return builder.buildFailure(Boolean.FALSE, HttpStatus.OK, INVALID_TRANSACTION);
         }
@@ -164,31 +164,32 @@ public class TransactionRestController {
         OutcomeBuilder<String, DecisionPath> builder = OutcomeBuilder.<String, DecisionPath>begin()
                 .record(DecisionPath.PRE_VALIDATION);
 
+        if (!validateAndNormalizeAmount(withdrawInput::setAmount, withdrawInput.getAmount(), builder)) {
+            return builder.buildInvalid(HttpStatus.BAD_REQUEST, INVALID_TRANSACTION_AMOUNT);
+        }
+
         if (!InputValidator.isSearchCriteriaValid(withdrawInput)) {
             builder.record(DecisionPath.VALIDATION_FAILED_GENERIC);
             return builder.buildInvalid(HttpStatus.BAD_REQUEST, INVALID_SEARCH_CRITERIA);
         }
 
-        if (!validateAndNormalizeAmount(withdrawInput::setAmount, withdrawInput.getAmount(), builder)) {
-            return builder.buildInvalid(HttpStatus.BAD_REQUEST, INVALID_TRANSACTION_AMOUNT);
-        }
-
         builder.record(DecisionPath.ACCOUNT_LOOKUP);
-        Account account = accountService.getAccount(withdrawInput.getSortCode(), withdrawInput.getAccountNumber());
+        Account withdrawAccount = accountService.getAccount(withdrawInput.getSortCode(), withdrawInput.getAccountNumber());
 
-        if (account == null) {
+        if (withdrawAccount == null) {
             builder.record(DecisionPath.RESULT_EMPTY);
             return builder.buildEmpty(HttpStatus.OK, NO_ACCOUNT_FOUND);
         }
 
         builder.record(DecisionPath.BALANCE_CHECK);
-        if (!transactionService.isAmountAvailable(withdrawInput.getAmount(), account.getCurrentBalance())) {
+        double withdrawalAmount = withdrawInput.getAmount();
+        if (!transactionService.isAmountAvailable(withdrawalAmount, withdrawAccount.getCurrentBalance())) {
             builder.record(DecisionPath.INSUFFICIENT_FUNDS);
             return builder.buildFailure(HttpStatus.OK, INSUFFICIENT_ACCOUNT_BALANCE);
         }
 
         builder.record(DecisionPath.BALANCE_UPDATE);
-        transactionService.updateAccountBalance(account, withdrawInput.getAmount(), ACTION.WITHDRAW);
+        transactionService.updateAccountBalance(withdrawAccount, withdrawalAmount, ACTION.WITHDRAW);
 
         builder.record(DecisionPath.RESULT_SUCCESS);
         return builder.buildSuccess(SUCCESS, HttpStatus.OK);
@@ -198,25 +199,26 @@ public class TransactionRestController {
         OutcomeBuilder<String, DecisionPath> builder = OutcomeBuilder.<String, DecisionPath>begin()
                 .record(DecisionPath.PRE_VALIDATION);
 
+        if (!validateAndNormalizeAmount(depositInput::setAmount, depositInput.getAmount(), builder)) {
+            return builder.buildInvalid(HttpStatus.BAD_REQUEST, INVALID_TRANSACTION_AMOUNT);
+        }
+
         if (!InputValidator.isAccountNoValid(depositInput.getTargetAccountNo())) {
             builder.record(DecisionPath.VALIDATION_FAILED_GENERIC);
             return builder.buildInvalid(HttpStatus.BAD_REQUEST, INVALID_SEARCH_CRITERIA);
         }
 
-        if (!validateAndNormalizeAmount(depositInput::setAmount, depositInput.getAmount(), builder)) {
-            return builder.buildInvalid(HttpStatus.BAD_REQUEST, INVALID_TRANSACTION_AMOUNT);
-        }
-
         builder.record(DecisionPath.ACCOUNT_LOOKUP);
-        Account account = accountService.getAccount(depositInput.getTargetAccountNo());
+        Account targetAccount = accountService.getAccount(depositInput.getTargetAccountNo());
 
-        if (account == null) {
+        if (targetAccount == null) {
             builder.record(DecisionPath.RESULT_EMPTY);
             return builder.buildEmpty(HttpStatus.OK, NO_ACCOUNT_FOUND);
         }
 
         builder.record(DecisionPath.BALANCE_UPDATE);
-        transactionService.updateAccountBalance(account, depositInput.getAmount(), ACTION.DEPOSIT);
+        double depositAmount = depositInput.getAmount();
+        transactionService.updateAccountBalance(targetAccount, depositAmount, ACTION.DEPOSIT);
 
         builder.record(DecisionPath.RESULT_SUCCESS);
         return builder.buildSuccess(SUCCESS, HttpStatus.OK);
@@ -226,22 +228,24 @@ public class TransactionRestController {
                                                double amount,
                                                OutcomeBuilder<?, DecisionPath> builder) {
         builder.record(DecisionPath.AMOUNT_VALIDATION);
-        if (Double.isNaN(amount) || Double.isInfinite(amount)) {
+        
+        if (Double.isNaN(amount) || Double.isInfinite(amount) || amount <= 0) {
             builder.record(DecisionPath.AMOUNT_INVALID);
             return false;
         }
 
-        double normalized = BigDecimal.valueOf(amount)
+        double roundedAmount = BigDecimal.valueOf(amount)
                 .setScale(2, RoundingMode.HALF_UP)
                 .doubleValue();
 
-        if (normalized <= 0) {
+        if (roundedAmount <= 0) {
             builder.record(DecisionPath.AMOUNT_INVALID);
             return false;
         }
 
-        sanitizer.accept(normalized);
-        if (normalized != amount) {
+        boolean wasSanitized = roundedAmount != amount;
+        sanitizer.accept(roundedAmount);
+        if (wasSanitized) {
             builder.record(DecisionPath.AMOUNT_SANITIZED);
         }
 
