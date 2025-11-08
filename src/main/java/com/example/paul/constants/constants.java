@@ -32,10 +32,4 @@ public class constants {
 
     public static final String INVALID_TRANSACTION_AMOUNT =
             "Transaction amount must be greater than zero";
-    public static final String INVALID_TRANSACTION_AMOUNT_FORMAT =
-            "Transaction amount is not a valid number";
-    public static final String TRANSACTION_AMOUNT_TOO_SMALL =
-            "Transaction amount is below the minimum allowed (0.01)";
-    public static final String TRANSACTION_AMOUNT_TOO_LARGE =
-            "Transaction amount exceeds the maximum allowed (1,000,000.00)";
 }
