@@ -18,10 +18,9 @@ import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.*;
 
 import javax.validation.Valid;
-import java.math.BigDecimal;
-import java.math.RoundingMode;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.function.Supplier;
 
 import static com.example.paul.constants.constants.*;
 
@@ -144,9 +143,11 @@ public class TransactionRestController {
             return builder.buildInvalid(HttpStatus.BAD_REQUEST, INVALID_TRANSACTION);
         }
 
-        if (!validateAndNormalizeAmount(transactionInput::setAmount, transactionInput.getAmount(), builder)) {
-            return builder.buildInvalid(HttpStatus.BAD_REQUEST, INVALID_TRANSACTION_AMOUNT);
+        AmountValidationOutcome amountOutcome = applyAdvancedAmountValidation(transactionInput.getAmount(), builder);
+        if (!amountOutcome.isValid()) {
+            return builder.buildInvalid(HttpStatus.BAD_REQUEST, amountOutcome.getMessage());
         }
+        transactionInput.setAmount(amountOutcome.getNormalizedAmount());
 
         builder.record(DecisionPath.TRANSFER_ATTEMPT);
         boolean completed = transactionService.makeTransfer(transactionInput);
@@ -169,29 +170,19 @@ public class TransactionRestController {
             return builder.buildInvalid(HttpStatus.BAD_REQUEST, INVALID_SEARCH_CRITERIA);
         }
 
-        if (!validateAndNormalizeAmount(withdrawInput::setAmount, withdrawInput.getAmount(), builder)) {
-            return builder.buildInvalid(HttpStatus.BAD_REQUEST, INVALID_TRANSACTION_AMOUNT);
+        AmountValidationOutcome amountOutcome = applyAdvancedAmountValidation(withdrawInput.getAmount(), builder);
+        if (!amountOutcome.isValid()) {
+            return builder.buildInvalid(HttpStatus.BAD_REQUEST, amountOutcome.getMessage());
         }
+        withdrawInput.setAmount(amountOutcome.getNormalizedAmount());
 
-        builder.record(DecisionPath.ACCOUNT_LOOKUP);
-        Account account = accountService.getAccount(withdrawInput.getSortCode(), withdrawInput.getAccountNumber());
-
-        if (account == null) {
-            builder.record(DecisionPath.RESULT_EMPTY);
-            return builder.buildEmpty(HttpStatus.OK, NO_ACCOUNT_FOUND);
-        }
-
-        builder.record(DecisionPath.BALANCE_CHECK);
-        if (!transactionService.isAmountAvailable(withdrawInput.getAmount(), account.getCurrentBalance())) {
-            builder.record(DecisionPath.INSUFFICIENT_FUNDS);
-            return builder.buildFailure(HttpStatus.OK, INSUFFICIENT_ACCOUNT_BALANCE);
-        }
-
-        builder.record(DecisionPath.BALANCE_UPDATE);
-        transactionService.updateAccountBalance(account, withdrawInput.getAmount(), ACTION.WITHDRAW);
-
-        builder.record(DecisionPath.RESULT_SUCCESS);
-        return builder.buildSuccess(SUCCESS, HttpStatus.OK);
+        return executeBalanceMutation(builder,
+                () -> accountService.getAccount(withdrawInput.getSortCode(), withdrawInput.getAccountNumber()),
+                ACTION.WITHDRAW,
+                withdrawInput.getAmount(),
+                true,
+                NO_ACCOUNT_FOUND,
+                INSUFFICIENT_ACCOUNT_BALANCE);
     }
 
     private OperationOutcome<String, DecisionPath> evaluateDeposit(DepositInput depositInput) {
@@ -203,49 +194,100 @@ public class TransactionRestController {
             return builder.buildInvalid(HttpStatus.BAD_REQUEST, INVALID_SEARCH_CRITERIA);
         }
 
-        if (!validateAndNormalizeAmount(depositInput::setAmount, depositInput.getAmount(), builder)) {
-            return builder.buildInvalid(HttpStatus.BAD_REQUEST, INVALID_TRANSACTION_AMOUNT);
+        AmountValidationOutcome amountOutcome = applyAdvancedAmountValidation(depositInput.getAmount(), builder);
+        if (!amountOutcome.isValid()) {
+            return builder.buildInvalid(HttpStatus.BAD_REQUEST, amountOutcome.getMessage());
         }
+        depositInput.setAmount(amountOutcome.getNormalizedAmount());
 
-        builder.record(DecisionPath.ACCOUNT_LOOKUP);
-        Account account = accountService.getAccount(depositInput.getTargetAccountNo());
-
-        if (account == null) {
-            builder.record(DecisionPath.RESULT_EMPTY);
-            return builder.buildEmpty(HttpStatus.OK, NO_ACCOUNT_FOUND);
-        }
-
-        builder.record(DecisionPath.BALANCE_UPDATE);
-        transactionService.updateAccountBalance(account, depositInput.getAmount(), ACTION.DEPOSIT);
-
-        builder.record(DecisionPath.RESULT_SUCCESS);
-        return builder.buildSuccess(SUCCESS, HttpStatus.OK);
+        return executeBalanceMutation(builder,
+                () -> accountService.getAccount(depositInput.getTargetAccountNo()),
+                ACTION.DEPOSIT,
+                depositInput.getAmount(),
+                false,
+                NO_ACCOUNT_FOUND,
+                INVALID_TRANSACTION_AMOUNT);
     }
 
-    private boolean validateAndNormalizeAmount(java.util.function.DoubleConsumer sanitizer,
-                                               double amount,
-                                               OutcomeBuilder<?, DecisionPath> builder) {
+    private AmountValidationOutcome applyAdvancedAmountValidation(double amount,
+                                                                  OutcomeBuilder<?, DecisionPath> builder) {
         builder.record(DecisionPath.AMOUNT_VALIDATION);
         if (Double.isNaN(amount) || Double.isInfinite(amount)) {
-            builder.record(DecisionPath.AMOUNT_INVALID);
-            return false;
+            builder.record(DecisionPath.AMOUNT_INVALID_FORMAT);
+            return AmountValidationOutcome.invalid(INVALID_TRANSACTION_AMOUNT_FORMAT);
         }
 
-        double normalized = BigDecimal.valueOf(amount)
-                .setScale(2, RoundingMode.HALF_UP)
-                .doubleValue();
-
-        if (normalized <= 0) {
-            builder.record(DecisionPath.AMOUNT_INVALID);
-            return false;
+        TransactionAmountValidator.ValidationResult result = TransactionAmountValidator.validate(amount);
+        if (!result.isValid()) {
+            DecisionPath reasonPath = mapReasonToDecisionPath(result.getReason());
+            builder.record(reasonPath);
+            return AmountValidationOutcome.invalid(mapReasonToMessage(result.getReason()));
         }
 
-        sanitizer.accept(normalized);
-        if (normalized != amount) {
+        double normalized = result.getNormalizedAmount().doubleValue();
+        if (result.isSanitized()) {
             builder.record(DecisionPath.AMOUNT_SANITIZED);
         }
 
-        return true;
+        return AmountValidationOutcome.valid(normalized);
+    }
+
+    private DecisionPath mapReasonToDecisionPath(TransactionAmountValidator.Reason reason) {
+        switch (reason) {
+            case INVALID_NUMBER:
+                return DecisionPath.AMOUNT_INVALID_FORMAT;
+            case BELOW_MINIMUM:
+                return DecisionPath.AMOUNT_TOO_SMALL;
+            case ABOVE_MAXIMUM:
+                return DecisionPath.AMOUNT_TOO_LARGE;
+            default:
+                throw new IllegalStateException("Unhandled reason " + reason);
+        }
+    }
+
+    private String mapReasonToMessage(TransactionAmountValidator.Reason reason) {
+        switch (reason) {
+            case INVALID_NUMBER:
+                return INVALID_TRANSACTION_AMOUNT_FORMAT;
+            case BELOW_MINIMUM:
+                return TRANSACTION_AMOUNT_TOO_SMALL;
+            case ABOVE_MAXIMUM:
+                return TRANSACTION_AMOUNT_TOO_LARGE;
+            default:
+                return INVALID_TRANSACTION_AMOUNT;
+        }
+    }
+
+    private OperationOutcome<String, DecisionPath> executeBalanceMutation(
+            OutcomeBuilder<String, DecisionPath> builder,
+            Supplier<Account> accountSupplier,
+            ACTION action,
+            double amount,
+            boolean ensureFunds,
+            String emptyMessage,
+            String insufficientMessage) {
+
+        builder.record(DecisionPath.ACCOUNT_LOOKUP);
+        Account account = accountSupplier.get();
+
+        if (account == null) {
+            builder.record(DecisionPath.RESULT_EMPTY);
+            return builder.buildEmpty(HttpStatus.OK, emptyMessage);
+        }
+
+        if (ensureFunds) {
+            builder.record(DecisionPath.BALANCE_CHECK);
+            if (!transactionService.isAmountAvailable(amount, account.getCurrentBalance())) {
+                builder.record(DecisionPath.INSUFFICIENT_FUNDS);
+                return builder.buildFailure(HttpStatus.OK, insufficientMessage);
+            }
+        }
+
+        builder.record(DecisionPath.BALANCE_UPDATE);
+        transactionService.updateAccountBalance(account, amount, action);
+
+        builder.record(DecisionPath.RESULT_SUCCESS);
+        return builder.buildSuccess(SUCCESS, HttpStatus.OK);
     }
 
     private enum DecisionPath {
@@ -253,7 +295,9 @@ public class TransactionRestController {
         VALIDATION_FAILED_GENERIC,
         AMOUNT_VALIDATION,
         AMOUNT_SANITIZED,
-        AMOUNT_INVALID,
+        AMOUNT_INVALID_FORMAT,
+        AMOUNT_TOO_SMALL,
+        AMOUNT_TOO_LARGE,
         TRANSFER_ATTEMPT,
         TRANSFER_FAILED,
         ACCOUNT_LOOKUP,
@@ -264,4 +308,35 @@ public class TransactionRestController {
         RESULT_SUCCESS
     }
 
+    private static final class AmountValidationOutcome {
+        private final boolean valid;
+        private final double normalizedAmount;
+        private final String message;
+
+        private AmountValidationOutcome(boolean valid, double normalizedAmount, String message) {
+            this.valid = valid;
+            this.normalizedAmount = normalizedAmount;
+            this.message = message;
+        }
+
+        static AmountValidationOutcome valid(double normalizedAmount) {
+            return new AmountValidationOutcome(true, normalizedAmount, null);
+        }
+
+        static AmountValidationOutcome invalid(String message) {
+            return new AmountValidationOutcome(false, 0d, message);
+        }
+
+        boolean isValid() {
+            return valid;
+        }
+
+        double getNormalizedAmount() {
+            return normalizedAmount;
+        }
+
+        String getMessage() {
+            return message;
+        }
+    }
 }
