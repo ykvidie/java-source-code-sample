@@ -139,6 +139,13 @@ public class AccountRestController {
             return builder.buildEmpty(HttpStatus.OK, constants.NO_ACCOUNT_FOUND);
         }
 
+        builder.record(DecisionPath.ACCOUNT_VERIFICATION_STARTED);
+        if (!isAccountVerified(account)) {
+            builder.record(DecisionPath.ACCOUNT_VERIFICATION_FAILED);
+            return builder.buildFailure(HttpStatus.OK, constants.ACCOUNT_VERIFICATION_FAILED);
+        }
+        builder.record(DecisionPath.ACCOUNT_VERIFICATION_PASSED);
+
         builder.record(DecisionPath.RESULT_SUCCESS);
         return builder.buildSuccess(account, HttpStatus.OK);
     }
@@ -180,6 +187,13 @@ public class AccountRestController {
             return builder.buildEmpty(HttpStatus.OK, constants.CREATE_ACCOUNT_FAILED);
         }
 
+        builder.record(DecisionPath.ACCOUNT_VERIFICATION_STARTED);
+        if (!isAccountVerified(account)) {
+            builder.record(DecisionPath.ACCOUNT_VERIFICATION_FAILED);
+            return builder.buildFailure(HttpStatus.OK, constants.ACCOUNT_VERIFICATION_FAILED);
+        }
+        builder.record(DecisionPath.ACCOUNT_VERIFICATION_PASSED);
+
         builder.record(DecisionPath.CREATION_SUCCESS);
         return builder.buildSuccess(account, HttpStatus.OK);
     }
@@ -218,7 +232,18 @@ public class AccountRestController {
         CREATION_FAILURE,
         CREATION_SUCCESS,
         BANK_NAME_TOO_SHORT,
-        OWNER_NAME_TOO_SHORT
+        OWNER_NAME_TOO_SHORT,
+        ACCOUNT_VERIFICATION_STARTED,
+        ACCOUNT_VERIFICATION_FAILED,
+        ACCOUNT_VERIFICATION_PASSED
     }
 
+    private boolean isAccountVerified(Account account) {
+        if (account == null) {
+            return false;
+        }
+        boolean hasOwner = !isBlank(account.getOwnerName());
+        boolean hasIdentifiers = !isBlank(account.getSortCode()) && !isBlank(account.getAccountNumber());
+        return hasOwner && hasIdentifiers;
+    }
 }
