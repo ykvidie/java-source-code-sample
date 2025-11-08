@@ -1,8 +1,6 @@
 package com.example.paul.controllers;
 
 import com.example.paul.constants.constants;
-import com.example.paul.controllers.workflow.OperationOutcome;
-import com.example.paul.controllers.workflow.OutcomeBuilder;
 import com.example.paul.models.Account;
 import com.example.paul.services.AccountService;
 import com.example.paul.utils.AccountInput;
@@ -44,12 +42,22 @@ public class AccountRestController {
             @Valid @RequestBody AccountInput accountInput) {
         LOGGER.debug("Triggered AccountRestController.accountInput");
 
-        OperationOutcome<Account, DecisionPath> outcome = evaluateAccountLookup(accountInput);
-        logOutcome(outcome, "account lookup");
-        return convertOutcome(outcome,
-                constants.NO_ACCOUNT_FOUND,
-                constants.INVALID_SEARCH_CRITERIA,
-                constants.NO_ACCOUNT_FOUND);
+        sanitizeAccountInput(accountInput);
+
+        if (hasMissingAccountFields(accountInput) || !InputValidator.isSearchCriteriaValid(accountInput)) {
+            return ResponseEntity
+                    .status(HttpStatus.BAD_REQUEST)
+                    .body(constants.INVALID_SEARCH_CRITERIA);
+        }
+
+        Account account = accountService.getAccount(
+                accountInput.getSortCode(), accountInput.getAccountNumber());
+
+        if (account == null) {
+            return ResponseEntity.ok(constants.NO_ACCOUNT_FOUND);
+        }
+
+        return ResponseEntity.ok(account);
     }
 
 
@@ -60,12 +68,37 @@ public class AccountRestController {
             @Valid @RequestBody CreateAccountInput createAccountInput) {
         LOGGER.debug("Triggered AccountRestController.createAccountInput");
 
-        OperationOutcome<Account, DecisionPath> outcome = evaluateAccountCreation(createAccountInput);
-        logOutcome(outcome, "account creation");
-        return convertOutcome(outcome,
-                constants.CREATE_ACCOUNT_FAILED,
-                constants.INVALID_SEARCH_CRITERIA,
-                constants.CREATE_ACCOUNT_FAILED);
+        sanitizeCreateAccountInput(createAccountInput);
+
+        if (hasMissingCreateFields(createAccountInput) ||
+                !InputValidator.isCreateAccountCriteriaValid(createAccountInput)) {
+            return ResponseEntity
+                    .status(HttpStatus.BAD_REQUEST)
+                    .body(constants.INVALID_SEARCH_CRITERIA);
+        }
+
+        if (!hasMinimumLength(createAccountInput.getBankName(), MIN_ACCOUNT_NAME_LENGTH)) {
+            return ResponseEntity
+                    .status(HttpStatus.BAD_REQUEST)
+                    .body(constants.BANK_NAME_TOO_SHORT);
+        }
+
+        if (!hasMinimumLength(createAccountInput.getOwnerName(), MIN_ACCOUNT_NAME_LENGTH)) {
+            return ResponseEntity
+                    .status(HttpStatus.BAD_REQUEST)
+                    .body(constants.OWNER_NAME_TOO_SHORT);
+        }
+
+        Account createdAccount = accountService.createAccount(
+                createAccountInput.getBankName(), createAccountInput.getOwnerName());
+
+        if (createdAccount == null) {
+            return ResponseEntity
+                    .status(HttpStatus.OK)
+                    .body(constants.CREATE_ACCOUNT_FAILED);
+        }
+
+        return ResponseEntity.ok(createdAccount);
     }
 
     @ResponseStatus(HttpStatus.BAD_REQUEST)
@@ -83,142 +116,37 @@ public class AccountRestController {
         return errors;
     }
 
-    private ResponseEntity<?> convertOutcome(OperationOutcome<?, DecisionPath> outcome,
-                                             String emptyResultMessage,
-                                             String invalidMessage,
-                                             String failureMessage) {
-        switch (outcome.getType()) {
-            case SUCCESS:
-                return new ResponseEntity<>(outcome.getPayload(), outcome.getStatus());
-            case INVALID_INPUT:
-                return new ResponseEntity<>(resolveMessage(outcome.getMessage(), invalidMessage), outcome.getStatus());
-            case EMPTY_RESULT:
-                return new ResponseEntity<>(resolveMessage(outcome.getMessage(), emptyResultMessage), outcome.getStatus());
-            case FAILURE:
-                return new ResponseEntity<>(resolveMessage(outcome.getMessage(), failureMessage), outcome.getStatus());
-            default:
-                throw new IllegalStateException("Unhandled outcome type: " + outcome.getType());
-        }
-    }
-
-    private String resolveMessage(String preferredMessage, String fallbackMessage) {
-        return preferredMessage == null ? fallbackMessage : preferredMessage;
-    }
-
-    private void logOutcome(OperationOutcome<?, DecisionPath> outcome, String context) {
-        if (LOGGER.isDebugEnabled()) {
-            LOGGER.debug("Outcome for {} -> type={}, status={}, trail={}",
-                    context, outcome.getType(), outcome.getStatus(), outcome.getDecisionTrail());
-        }
-    }
-
-    private OperationOutcome<Account, DecisionPath> evaluateAccountLookup(AccountInput accountInput) {
-        OutcomeBuilder<Account, DecisionPath> builder = OutcomeBuilder.<Account, DecisionPath>begin()
-                .record(DecisionPath.PRE_VALIDATION);
-
-        String sanitizedSortCode = sanitizeAndRecord(accountInput.getSortCode(),
-                DecisionPath.SORT_CODE_SANITIZED, builder);
-        String sanitizedAccountNumber = sanitizeAndRecord(accountInput.getAccountNumber(),
-                DecisionPath.ACCOUNT_NUMBER_SANITIZED, builder);
-
-        if (isBlank(sanitizedSortCode) || isBlank(sanitizedAccountNumber)) {
-            builder.record(DecisionPath.VALIDATION_FAILED_MISSING_FIELDS);
-            return builder.buildInvalid(HttpStatus.BAD_REQUEST, constants.INVALID_SEARCH_CRITERIA);
-        }
-
-        if (!InputValidator.isSearchCriteriaValid(accountInput)) {
-            builder.record(DecisionPath.VALIDATION_FAILED_GENERIC);
-            return builder.buildInvalid(HttpStatus.BAD_REQUEST, constants.INVALID_SEARCH_CRITERIA);
-        }
-
-        builder.record(DecisionPath.SERVICE_INVOCATION);
-        Account account = accountService.getAccount(sanitizedSortCode, sanitizedAccountNumber);
-
-        if (account == null) {
-            builder.record(DecisionPath.RESULT_EMPTY);
-            return builder.buildEmpty(HttpStatus.OK, constants.NO_ACCOUNT_FOUND);
-        }
-
-        builder.record(DecisionPath.RESULT_SUCCESS);
-        return builder.buildSuccess(account, HttpStatus.OK);
-    }
-
-    private OperationOutcome<Account, DecisionPath> evaluateAccountCreation(CreateAccountInput createAccountInput) {
-        OutcomeBuilder<Account, DecisionPath> builder = OutcomeBuilder.<Account, DecisionPath>begin()
-                .record(DecisionPath.PRE_VALIDATION);
-
-        String sanitizedBankName = sanitizeAndRecord(createAccountInput.getBankName(),
-                DecisionPath.BANK_NAME_SANITIZED, builder);
-        String sanitizedOwnerName = sanitizeAndRecord(createAccountInput.getOwnerName(),
-                DecisionPath.OWNER_NAME_SANITIZED, builder);
-
-        if (isBlank(sanitizedBankName) || isBlank(sanitizedOwnerName)) {
-            builder.record(DecisionPath.VALIDATION_FAILED_MISSING_FIELDS);
-            return builder.buildInvalid(HttpStatus.BAD_REQUEST, constants.INVALID_SEARCH_CRITERIA);
-        }
-
-        if (!InputValidator.isCreateAccountCriteriaValid(createAccountInput)) {
-            builder.record(DecisionPath.VALIDATION_FAILED_GENERIC);
-            return builder.buildInvalid(HttpStatus.BAD_REQUEST, constants.INVALID_SEARCH_CRITERIA);
-        }
-
-        if (!hasMinimumLength(sanitizedBankName, MIN_ACCOUNT_NAME_LENGTH)) {
-            builder.record(DecisionPath.BANK_NAME_TOO_SHORT);
-            return builder.buildInvalid(HttpStatus.BAD_REQUEST, constants.BANK_NAME_TOO_SHORT);
-        }
-
-        if (!hasMinimumLength(sanitizedOwnerName, MIN_ACCOUNT_NAME_LENGTH)) {
-            builder.record(DecisionPath.OWNER_NAME_TOO_SHORT);
-            return builder.buildInvalid(HttpStatus.BAD_REQUEST, constants.OWNER_NAME_TOO_SHORT);
-        }
-
-        builder.record(DecisionPath.CREATION_ATTEMPT);
-        Account account = accountService.createAccount(sanitizedBankName, sanitizedOwnerName);
-
-        if (account == null) {
-            builder.record(DecisionPath.CREATION_FAILURE);
-            return builder.buildEmpty(HttpStatus.OK, constants.CREATE_ACCOUNT_FAILED);
-        }
-
-        builder.record(DecisionPath.CREATION_SUCCESS);
-        return builder.buildSuccess(account, HttpStatus.OK);
-    }
-
     private boolean isBlank(String value) {
         return value == null || value.trim().isEmpty();
-    }
-
-    private <T> String sanitizeAndRecord(String value, DecisionPath path, OutcomeBuilder<T, DecisionPath> builder) {
-        if (value == null) {
-            return null;
-        }
-        String sanitized = value.trim();
-        if (!sanitized.equals(value)) {
-            builder.record(path);
-        }
-        return sanitized;
     }
 
     private boolean hasMinimumLength(String value, int minLength) {
         return value != null && value.length() >= minLength;
     }
 
-    private enum DecisionPath {
-        PRE_VALIDATION,
-        VALIDATION_FAILED_MISSING_FIELDS,
-        VALIDATION_FAILED_GENERIC,
-        SORT_CODE_SANITIZED,
-        ACCOUNT_NUMBER_SANITIZED,
-        BANK_NAME_SANITIZED,
-        OWNER_NAME_SANITIZED,
-        SERVICE_INVOCATION,
-        RESULT_EMPTY,
-        RESULT_SUCCESS,
-        CREATION_ATTEMPT,
-        CREATION_FAILURE,
-        CREATION_SUCCESS,
-        BANK_NAME_TOO_SHORT,
-        OWNER_NAME_TOO_SHORT
+    private void sanitizeAccountInput(AccountInput accountInput) {
+        accountInput.setSortCode(trimToNull(accountInput.getSortCode()));
+        accountInput.setAccountNumber(trimToNull(accountInput.getAccountNumber()));
     }
 
+    private void sanitizeCreateAccountInput(CreateAccountInput createAccountInput) {
+        createAccountInput.setBankName(trimToNull(createAccountInput.getBankName()));
+        createAccountInput.setOwnerName(trimToNull(createAccountInput.getOwnerName()));
+    }
+
+    private boolean hasMissingAccountFields(AccountInput accountInput) {
+        return isBlank(accountInput.getSortCode()) || isBlank(accountInput.getAccountNumber());
+    }
+
+    private boolean hasMissingCreateFields(CreateAccountInput createAccountInput) {
+        return isBlank(createAccountInput.getBankName()) || isBlank(createAccountInput.getOwnerName());
+    }
+
+    private String trimToNull(String value) {
+        if (value == null) {
+            return null;
+        }
+        String trimmed = value.trim();
+        return trimmed.isEmpty() ? null : trimmed;
+    }
 }
