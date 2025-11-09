@@ -91,14 +91,19 @@ public class AccountRestController {
             case SUCCESS:
                 return new ResponseEntity<>(outcome.getPayload(), outcome.getStatus());
             case INVALID_INPUT:
-                return new ResponseEntity<>(resolveMessage(outcome.getMessage(), invalidMessage), outcome.getStatus());
+                return new ResponseEntity<>(resolveBody(outcome, invalidMessage), outcome.getStatus());
             case EMPTY_RESULT:
-                return new ResponseEntity<>(resolveMessage(outcome.getMessage(), emptyResultMessage), outcome.getStatus());
+                return new ResponseEntity<>(resolveBody(outcome, emptyResultMessage), outcome.getStatus());
             case FAILURE:
-                return new ResponseEntity<>(resolveMessage(outcome.getMessage(), failureMessage), outcome.getStatus());
+                return new ResponseEntity<>(resolveBody(outcome, failureMessage), outcome.getStatus());
             default:
                 throw new IllegalStateException("Unhandled outcome type: " + outcome.getType());
         }
+    }
+
+    private Object resolveBody(OperationOutcome<?, DecisionPath> outcome, String fallbackMessage) {
+        Object payload = outcome.getPayload();
+        return payload != null ? payload : resolveMessage(outcome.getMessage(), fallbackMessage);
     }
 
     private String resolveMessage(String preferredMessage, String fallbackMessage) {
@@ -169,16 +174,17 @@ public class AccountRestController {
             return builder.buildInvalid(HttpStatus.BAD_REQUEST, constants.INVALID_SEARCH_CRITERIA);
         }
 
-        if (!hasMinimumLength(bankName, MIN_ACCOUNT_NAME_LENGTH) || !hasMinimumLength(ownerName, MIN_ACCOUNT_NAME_LENGTH)) {
-            if (!hasMinimumLength(bankName, MIN_ACCOUNT_NAME_LENGTH)) {
+        boolean bankNameTooShort = !hasMinimumLength(bankName, MIN_ACCOUNT_NAME_LENGTH);
+        boolean ownerNameTooShort = !hasMinimumLength(ownerName, MIN_ACCOUNT_NAME_LENGTH);
+        if (bankNameTooShort || ownerNameTooShort) {
+            if (bankNameTooShort) {
                 builder.record(DecisionPath.BANK_NAME_TOO_SHORT);
             }
-            if (!hasMinimumLength(ownerName, MIN_ACCOUNT_NAME_LENGTH)) {
+            if (ownerNameTooShort) {
                 builder.record(DecisionPath.OWNER_NAME_TOO_SHORT);
             }
-            return builder.buildInvalid(HttpStatus.BAD_REQUEST, 
-                    !hasMinimumLength(bankName, MIN_ACCOUNT_NAME_LENGTH) ? 
-                            constants.BANK_NAME_TOO_SHORT : constants.OWNER_NAME_TOO_SHORT);
+            String lengthMessage = bankNameTooShort ? constants.BANK_NAME_TOO_SHORT : constants.OWNER_NAME_TOO_SHORT;
+            return builder.buildInvalid(HttpStatus.BAD_REQUEST, lengthMessage);
         }
 
         builder.record(DecisionPath.CREATION_ATTEMPT);
